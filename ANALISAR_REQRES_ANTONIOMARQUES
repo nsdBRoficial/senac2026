@@ -63,3 +63,67 @@ Body da Requisição: Nenhum
 Status Code Esperado: 404 Not Found
 Resposta da API (Exemplo do JSON):
 {}
+
+Tarefa pesquisa Lib, API, SDK
+
+BIBLIOTECA (Library / Lib)
+Definição
+Uma biblioteca é uma coleção de códigos, sub-rotinas, classes ou funções pré-escritas por outros desenvolvedores que podem ser importadas e reutilizadas no seu projeto.
+Em termos simples, ela serve para resolver problemas específicos e isolados de programação, evitando que você precise reescrever lógica básica do zero.
+
+Objetivo Principal
+Reutilização de código e produtividade: O principal foco é a eficiência. 
+Se você precisa fazer cálculos complexos, manipular arquivos PDF ou formatar datas, você importa uma biblioteca que já faz isso com segurança e performance testada pelo mercado.
+
+Funcionamento Prático
+O controle do fluxo da aplicação permanece inteiramente com você. O seu código "chama" uma função específica da biblioteca quando necessário, 
+ela executa a tarefa dentro da sua própria máquina e devolve o resultado para a sua linha de execução.
+
+Características-Chave
+Local e Integrada: Ela roda diretamente no ambiente local da sua aplicação (faz parte do seu código final).
+
+Escopo Estreito: É focada em resolver um problema por vez (ex: faturamento, gráficos, criptografia).
+
+Sem comunicação externa obrigatória: Ela não precisa se conectar à internet ou a servidores de terceiros para funcionar; ela apenas processa dados que você fornece localmente.
+
+API (Application Programming Interface)
+Definição
+Uma API é uma interface de comunicação, ou seja, um conjunto de regras e especificações que permite que dois softwares diferentes "conversem" e troquem dados entre si de forma segura e padronizada.
+Ela funciona como um contrato de integração de sistemas.
+
+Objetivo Principal
+Integração e Comunicação: O objetivo é permitir que sistemas distintos (muitas vezes criados em linguagens diferentes e hospedados em servidores diferentes)
+compartilhem dados e funcionalidades sem que um precise saber como o código interno do outro funciona.
+
+Funcionamento Prático
+Baseia-se no modelo Requisição (Request) e Resposta (Response). Sua aplicação envia uma solicitação formatada em um protocolo (geralmente HTTP usando formato JSON),
+o servidor que expõe a API recebe a mensagem, processa a regra de negócio do lado dele, e devolve o resultado formatado.
+
+Características-Chave
+Abstração total: Você não tem acesso ao código fonte do sistema que processa a informação; você só consome o resultado.
+
+Segurança de dados: Permite expor funcionalidades de um banco de dados ou servidor sem expor a infraestrutura por trás deles.
+
+Baseada em rede: Na grande maioria das vezes (especialmente APIs Web), exige conexão com a internet ou rede interna para enviar e receber requisições.
+
+SDK (Software Development Kit)
+Definição
+Um SDK (Kit de Desenvolvimento de Software) é um pacote completo e robusto que reúne todas as ferramentas necessárias para criar, compilar e testar softwares para uma plataforma específica.
+Trata-se de uma "caixa de ferramentas de desenvolvimento" completa de uma marca ou ecossistema.
+
+Objetivo Principal
+Facilitação do Desenvolvimento para Plataformas: O objetivo é centralizar tudo o que um programador precisa para construir aplicações para um sistema operacional 
+(como Android ou iOS) ou integrar serviços gigantescos (como serviços de nuvem da AWS ou Firebase) sem ter que buscar componentes soltos pela internet.
+
+Funcionamento Prático
+Ao instalar um SDK, você prepara todo o seu ambiente de desenvolvimento. Ele se conecta à sua IDE (ambiente de código) e traz consigo compiladores próprios, 
+depuradores de código para encontrar erros, documentações oficiais, códigos de exemplo e as bibliotecas necessárias.
+
+Características-Chave
+Tudo-em-um (All-in-one): Um SDK é a maior das três estruturas. Na verdade, ele costuma conter e gerenciar várias Libraries e servir como ponte para diversas APIs.
+
+Específico de Plataforma: Geralmente é criado pela empresa dona do sistema (ex: a Apple fornece o iOS SDK; a Google fornece o Android SDK).
+
+Compilação e Deploy: Além de ajudar a escrever o código, ele costuma trazer os utilitários necessários para transformar seu código escrito em um aplicativo pronto para rodar no dispositivo do usuário.
+
+Idéia de um Lib para meu projeto (Integra CRVA):
