@@ -1,0 +1,713 @@
+
+LIB : é a abreviação para biblioteca (do inglês library) na área de programação. É um conjunto de códigos, funções e recursos pré-escritos por outros desenvolvedores que você pode adicionar ao seu projeto para resolver problemas específicos
+SDK : é uma caixa de ferramentas para programadores. Ele acelera a criação de aplicativos ao reunir compiladores, bibliotecas, documentação e códigos pré-prontos. Em vez de criar funções complexas do zero, desenvolvedores usam SDKs para integrar rapidamente serviços como pagamentos ou mapas
+API : Uma API é um intermediário que permite que dois programas de software se comuniquem e define como eles solicitam e recebem dados ou funcionalidades.
+
+
+---  
+
+LIB SYNC BETAS 
+
+
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { io, Socket } from 'socket.io-client';
+import { RoomState, ChatMessage, Reaction, Suggestion } from '../types.ts';
+
+export type SyncBeatsEvent = 
+  | 'connect'
+  | 'disconnect'
+  | 'room_state'
+  | 'user_joined'
+  | 'new_message'
+  | 'sync_play'
+  | 'sync_pause'
+  | 'reaction'
+  | 'suggestion'
+  | 'suggestion_approved'
+  | 'time_sync';
+
+export type SyncBeatsCallback = (...args: any[]) => void;
+
+/**
+ * SyncBeatsClient is the official SDK/Library for real-time synchronization on Sync Beats.
+ * Handles latency computation (NTP/RTT protocol), websocket event orchestration, and playback syncing.
+ */
+export class SyncBeatsClient {
+  private socket: Socket | null = null;
+  private serverUrl: string;
+  private roomId: string;
+  private userId: string;
+  private userName: string;
+
+  private clockOffset: number = 0; // ServerTime - LocalTime
+  private latency: number = 0; // Round Trip Time (RTT) / 2
+  private listeners: Map<SyncBeatsEvent, Set<SyncBeatsCallback>> = new Map();
+  private roomState: RoomState | null = null;
+
+  constructor(serverUrl: string, roomId: string, userId: string, userName: string) {
+    this.serverUrl = serverUrl;
+    this.roomId = roomId;
+    this.userId = userId;
+    this.userName = userName;
+  }
+
+  /**
+   * Connects to the Sync Beats real-time server and joins the requested room.
+   */
+  public connect(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+    }
+
+    this.socket = io(this.serverUrl, {
+      transports: ['websocket'],
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+    });
+
+    this.setupSocketHandlers();
+  }
+
+  /**
+   * Disconnects from the server and cleans up active listeners.
+   */
+  public disconnect(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+  }
+
+  /**
+   * Registers an event callback listener.
+   */
+  public on(event: SyncBeatsEvent, callback: SyncBeatsCallback): void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(callback);
+  }
+
+  /**
+   * Unregisters an event callback listener.
+   */
+  public off(event: SyncBeatsEvent, callback: SyncBeatsCallback): void {
+    const eventSet = this.listeners.get(event);
+    if (eventSet) {
+      eventSet.delete(callback);
+    }
+  }
+
+  /**
+   * Triggers event callbacks.
+   */
+  private trigger(event: SyncBeatsEvent, ...args: any[]): void {
+    const eventSet = this.listeners.get(event);
+    if (eventSet) {
+      eventSet.forEach((cb) => {
+        try {
+          cb(...args);
+        } catch (err) {
+          console.error(`Error in SyncBeatsSDK listener for event "${event}":`, err);
+        }
+      });
+    }
+  }
+
+  /**
+   * Performs clock synchronization using NTP algorithm with Round Trip Time (RTT).
+   */
+  public syncTime(): Promise<{ offset: number; latency: number }> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket || !this.socket.connected) {
+        reject(new Error('Socket is not connected. Call connect() first.'));
+        return;
+      }
+
+      const t1 = Date.now();
+      
+      this.socket.emit('request_time', t1, (data: { serverTime: number }) => {
+        const t4 = Date.now();
+        const t2 = data.serverTime;
+        
+        // RTT = t4 - t1
+        const rtt = t4 - t1;
+        this.latency = rtt / 2;
+        
+        // Offset = ServerTime - LocalTime
+        // t2 represents ServerTime at the instant it received the packet,
+        // which corresponds to LocalTime t1 plus latency.
+        // Therefore: Offset = t2 - (t1 + latency)
+        this.clockOffset = t2 - (t1 + this.latency);
+
+        this.trigger('time_sync', { offset: this.clockOffset, latency: rtt });
+        resolve({ offset: this.clockOffset, latency: rtt });
+      });
+
+      // Fallback in case of acknowledgement failure (since Socket.io might not support acknowledgment natively on all setups)
+      this.socket.once('sync_time', (data: { clientTime: number; serverTime: number }) => {
+        if (data.clientTime === t1) {
+          const t4 = Date.now();
+          const t2 = data.serverTime;
+          const rtt = t4 - t1;
+          this.latency = rtt / 2;
+          this.clockOffset = t2 - (t1 + this.latency);
+
+          this.trigger('time_sync', { offset: this.clockOffset, latency: rtt });
+          resolve({ offset: this.clockOffset, latency: rtt });
+        }
+      });
+    });
+  }
+
+  /**
+   * Determines the precise current playhead position (in milliseconds)
+   * by compensating for clock drift and network propagation.
+   */
+  public calculateCurrentPosition(startTime: number, seekPosition: number, duration: number): number {
+    if (startTime === null || startTime === 0) {
+      return seekPosition;
+    }
+
+    const localNow = Date.now();
+    const serverNow = localNow + this.clockOffset;
+    const timeElapsedSinceStart = serverNow - startTime;
+    
+    // Position is the starting point plus elapsed time, capped at track duration
+    const currentPos = seekPosition + timeElapsedSinceStart;
+    return Math.min(currentPos, duration);
+  }
+
+  /**
+   * Triggers a play state transition synchronized across all nodes (Host only).
+   */
+  public play(trackId: string, seekPosition: number): void {
+    if (!this.socket) return;
+    this.socket.emit('sync_play', {
+      roomId: this.roomId,
+      trackId,
+      seekPosition,
+    });
+  }
+
+  /**
+   * Triggers a pause state transition synchronized across all nodes (Host only).
+   */
+  public pause(seekPosition: number): void {
+    if (!this.socket) return;
+    this.socket.emit('sync_pause', {
+      roomId: this.roomId,
+      seekPosition,
+    });
+  }
+
+  /**
+   * Sends a real-time chat message to the room.
+   */
+  public sendMessage(content: string): void {
+    if (!this.socket) return;
+    this.socket.emit('send_message', {
+      roomId: this.roomId,
+      userId: this.userId,
+      userName: this.userName,
+      content,
+    });
+  }
+
+  /**
+   * Transmits a floating emoji reaction to all participants.
+   */
+  public sendReaction(emoji: string): void {
+    if (!this.socket) return;
+    this.socket.emit('send_reaction', {
+      roomId: this.roomId,
+      userId: this.userId,
+      emoji,
+    });
+  }
+
+  /**
+   * Submits a track recommendation suggestion to the queue.
+   */
+  public suggestTrack(title: string, artist: string): void {
+    if (!this.socket) return;
+    this.socket.emit('send_suggestion', {
+      roomId: this.roomId,
+      userId: this.userId,
+      title,
+      artist,
+    });
+  }
+
+  /**
+   * Approves a user suggestion, updating the room's current track (Host only).
+   */
+  public approveSuggestion(suggestionId: string): void {
+    if (!this.socket) return;
+    this.socket.emit('approve_suggestion', {
+      roomId: this.roomId,
+      suggestionId,
+    });
+  }
+
+  /**
+   * Returns current clock offset in milliseconds.
+   */
+  public getClockOffset(): number {
+    return this.clockOffset;
+  }
+
+  /**
+   * Returns estimated round-trip latency in milliseconds.
+   */
+  public getLatency(): number {
+    return this.latency;
+  }
+
+  /**
+   * Returns the current state of the room.
+   */
+  public getRoomState(): RoomState | null {
+    return this.roomState;
+  }
+
+  /**
+   * Setup of Socket event forwarding to listeners.
+   */
+  private setupSocketHandlers(): void {
+    if (!this.socket) return;
+
+    this.socket.on('connect', () => {
+      this.trigger('connect');
+      
+      // Perform time synchronization right after connection
+      this.syncTime().catch(err => {
+        console.error('Initial clock sync failed:', err);
+      });
+
+      // Join room
+      this.socket?.emit('join_room', {
+        roomId: this.roomId,
+        userId: this.userId,
+        userName: this.userName,
+      });
+    });
+
+    this.socket.on('disconnect', () => {
+      this.trigger('disconnect');
+    });
+
+    this.socket.on('room_state', (state: RoomState) => {
+      this.roomState = state;
+      this.trigger('room_state', state);
+    });
+
+    this.socket.on('user_joined', (user: { userId: string; userName: string }) => {
+      this.trigger('user_joined', user);
+    });
+
+    this.socket.on('new_message', (message: ChatMessage) => {
+      this.trigger('new_message', message);
+    });
+
+    this.socket.on('sync_play', (data: { trackId: string; startTime: number; seekPosition: number }) => {
+      if (this.roomState) {
+        this.roomState.status = 'playing';
+        this.roomState.currentTrackId = data.trackId;
+        this.roomState.trackStartTime = data.startTime;
+        this.roomState.seekPosition = data.seekPosition;
+      }
+      this.trigger('sync_play', data);
+    });
+
+    this.socket.on('sync_pause', (data: { seekPosition: number }) => {
+      if (this.roomState) {
+        this.roomState.status = 'paused';
+        this.roomState.trackStartTime = null;
+        this.roomState.seekPosition = data.seekPosition;
+      }
+      this.trigger('sync_pause', data);
+    });
+
+    this.socket.on('reaction', (reaction: Reaction) => {
+      this.trigger('reaction', reaction);
+    });
+
+    this.socket.on('suggestion', (suggestion: Suggestion) => {
+      this.trigger('suggestion', suggestion);
+    });
+
+    this.socket.on('suggestion_approved', (data: { trackId: string; title: string; artist: string }) => {
+      if (this.roomState) {
+        this.roomState.currentTrackId = data.trackId;
+        this.roomState.status = 'paused';
+        this.roomState.seekPosition = 0;
+        this.roomState.trackStartTime = null;
+      }
+      this.trigger('suggestion_approved', data);
+    });
+  }
+
+
+
+
+
+
+
+
+
+=========================sdk arnol
+
+
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { io, Socket } from 'socket.io-client';
+import { RoomState, ChatMessage, Reaction, Suggestion } from '../types.ts';
+
+export type SyncBeatsEvent = 
+  | 'connect'
+  | 'disconnect'
+  | 'room_state'
+  | 'user_joined'
+  | 'new_message'
+  | 'sync_play'
+  | 'sync_pause'
+  | 'reaction'
+  | 'suggestion'
+  | 'suggestion_approved'
+  | 'time_sync';
+
+export type SyncBeatsCallback = (...args: any[]) => void;
+
+/**
+ * SyncBeatsClient is the official SDK/Library for real-time synchronization on Sync Beats.
+ * Handles latency computation (NTP/RTT protocol), websocket event orchestration, and playback syncing.
+ */
+export class SyncBeatsClient {
+  private socket: Socket | null = null;
+  private serverUrl: string;
+  private roomId: string;
+  private userId: string;
+  private userName: string;
+
+  private clockOffset: number = 0; // ServerTime - LocalTime
+  private latency: number = 0; // Round Trip Time (RTT) / 2
+  private listeners: Map<SyncBeatsEvent, Set<SyncBeatsCallback>> = new Map();
+  private roomState: RoomState | null = null;
+
+  constructor(serverUrl: string, roomId: string, userId: string, userName: string) {
+    this.serverUrl = serverUrl;
+    this.roomId = roomId;
+    this.userId = userId;
+    this.userName = userName;
+  }
+
+  /**
+   * Connects to the Sync Beats real-time server and joins the requested room.
+   */
+  public connect(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+    }
+
+    this.socket = io(this.serverUrl, {
+      transports: ['websocket'],
+      autoConnect: true,
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+    });
+
+    this.setupSocketHandlers();
+  }
+
+  /**
+   * Disconnects from the server and cleans up active listeners.
+   */
+  public disconnect(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+  }
+
+  /**
+   * Registers an event callback listener.
+   */
+  public on(event: SyncBeatsEvent, callback: SyncBeatsCallback): void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(callback);
+  }
+
+  /**
+   * Unregisters an event callback listener.
+   */
+  public off(event: SyncBeatsEvent, callback: SyncBeatsCallback): void {
+    const eventSet = this.listeners.get(event);
+    if (eventSet) {
+      eventSet.delete(callback);
+    }
+  }
+
+  /**
+   * Triggers event callbacks.
+   */
+  private trigger(event: SyncBeatsEvent, ...args: any[]): void {
+    const eventSet = this.listeners.get(event);
+    if (eventSet) {
+      eventSet.forEach((cb) => {
+        try {
+          cb(...args);
+        } catch (err) {
+          console.error(`Error in SyncBeatsSDK listener for event "${event}":`, err);
+        }
+      });
+    }
+  }
+
+  /**
+   * Performs clock synchronization using NTP algorithm with Round Trip Time (RTT).
+   */
+  public syncTime(): Promise<{ offset: number; latency: number }> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket || !this.socket.connected) {
+        reject(new Error('Socket is not connected. Call connect() first.'));
+        return;
+      }
+
+      const t1 = Date.now();
+      
+      this.socket.emit('request_time', t1, (data: { serverTime: number }) => {
+        const t4 = Date.now();
+        const t2 = data.serverTime;
+        
+        // RTT = t4 - t1
+        const rtt = t4 - t1;
+        this.latency = rtt / 2;
+        
+        // Offset = ServerTime - LocalTime
+        // t2 represents ServerTime at the instant it received the packet,
+        // which corresponds to LocalTime t1 plus latency.
+        // Therefore: Offset = t2 - (t1 + latency)
+        this.clockOffset = t2 - (t1 + this.latency);
+
+        this.trigger('time_sync', { offset: this.clockOffset, latency: rtt });
+        resolve({ offset: this.clockOffset, latency: rtt });
+      });
+
+      // Fallback in case of acknowledgement failure (since Socket.io might not support acknowledgment natively on all setups)
+      this.socket.once('sync_time', (data: { clientTime: number; serverTime: number }) => {
+        if (data.clientTime === t1) {
+          const t4 = Date.now();
+          const t2 = data.serverTime;
+          const rtt = t4 - t1;
+          this.latency = rtt / 2;
+          this.clockOffset = t2 - (t1 + this.latency);
+
+          this.trigger('time_sync', { offset: this.clockOffset, latency: rtt });
+          resolve({ offset: this.clockOffset, latency: rtt });
+        }
+      });
+    });
+  }
+
+  /**
+   * Determines the precise current playhead position (in milliseconds)
+   * by compensating for clock drift and network propagation.
+   */
+  public calculateCurrentPosition(startTime: number, seekPosition: number, duration: number): number {
+    if (startTime === null || startTime === 0) {
+      return seekPosition;
+    }
+
+    const localNow = Date.now();
+    const serverNow = localNow + this.clockOffset;
+    const timeElapsedSinceStart = serverNow - startTime;
+    
+    // Position is the starting point plus elapsed time, capped at track duration
+    const currentPos = seekPosition + timeElapsedSinceStart;
+    return Math.min(currentPos, duration);
+  }
+
+  /**
+   * Triggers a play state transition synchronized across all nodes (Host only).
+   */
+  public play(trackId: string, seekPosition: number): void {
+    if (!this.socket) return;
+    this.socket.emit('sync_play', {
+      roomId: this.roomId,
+      trackId,
+      seekPosition,
+    });
+  }
+
+  /**
+   * Triggers a pause state transition synchronized across all nodes (Host only).
+   */
+  public pause(seekPosition: number): void {
+    if (!this.socket) return;
+    this.socket.emit('sync_pause', {
+      roomId: this.roomId,
+      seekPosition,
+    });
+  }
+
+  /**
+   * Sends a real-time chat message to the room.
+   */
+  public sendMessage(content: string): void {
+    if (!this.socket) return;
+    this.socket.emit('send_message', {
+      roomId: this.roomId,
+      userId: this.userId,
+      userName: this.userName,
+      content,
+    });
+  }
+
+  /**
+   * Transmits a floating emoji reaction to all participants.
+   */
+  public sendReaction(emoji: string): void {
+    if (!this.socket) return;
+    this.socket.emit('send_reaction', {
+      roomId: this.roomId,
+      userId: this.userId,
+      emoji,
+    });
+  }
+
+  /**
+   * Submits a track recommendation suggestion to the queue.
+   */
+  public suggestTrack(title: string, artist: string): void {
+    if (!this.socket) return;
+    this.socket.emit('send_suggestion', {
+      roomId: this.roomId,
+      userId: this.userId,
+      title,
+      artist,
+    });
+  }
+
+  /**
+   * Approves a user suggestion, updating the room's current track (Host only).
+   */
+  public approveSuggestion(suggestionId: string): void {
+    if (!this.socket) return;
+    this.socket.emit('approve_suggestion', {
+      roomId: this.roomId,
+      suggestionId,
+    });
+  }
+
+  /**
+   * Returns current clock offset in milliseconds.
+   */
+  public getClockOffset(): number {
+    return this.clockOffset;
+  }
+
+  /**
+   * Returns estimated round-trip latency in milliseconds.
+   */
+  public getLatency(): number {
+    return this.latency;
+  }
+
+  /**
+   * Returns the current state of the room.
+   */
+  public getRoomState(): RoomState | null {
+    return this.roomState;
+  }
+
+  /**
+   * Setup of Socket event forwarding to listeners.
+   */
+  private setupSocketHandlers(): void {
+    if (!this.socket) return;
+
+    this.socket.on('connect', () => {
+      this.trigger('connect');
+      
+      // Perform time synchronization right after connection
+      this.syncTime().catch(err => {
+        console.error('Initial clock sync failed:', err);
+      });
+
+      // Join room
+      this.socket?.emit('join_room', {
+        roomId: this.roomId,
+        userId: this.userId,
+        userName: this.userName,
+      });
+    });
+
+    this.socket.on('disconnect', () => {
+      this.trigger('disconnect');
+    });
+
+    this.socket.on('room_state', (state: RoomState) => {
+      this.roomState = state;
+      this.trigger('room_state', state);
+    });
+
+    this.socket.on('user_joined', (user: { userId: string; userName: string }) => {
+      this.trigger('user_joined', user);
+    });
+
+    this.socket.on('new_message', (message: ChatMessage) => {
+      this.trigger('new_message', message);
+    });
+
+    this.socket.on('sync_play', (data: { trackId: string; startTime: number; seekPosition: number }) => {
+      if (this.roomState) {
+        this.roomState.status = 'playing';
+        this.roomState.currentTrackId = data.trackId;
+        this.roomState.trackStartTime = data.startTime;
+        this.roomState.seekPosition = data.seekPosition;
+      }
+      this.trigger('sync_play', data);
+    });
+
+    this.socket.on('sync_pause', (data: { seekPosition: number }) => {
+      if (this.roomState) {
+        this.roomState.status = 'paused';
+        this.roomState.trackStartTime = null;
+        this.roomState.seekPosition = data.seekPosition;
+      }
+      this.trigger('sync_pause', data);
+    });
+
+    this.socket.on('reaction', (reaction: Reaction) => {
+      this.trigger('reaction', reaction);
+    });
+
+    this.socket.on('suggestion', (suggestion: Suggestion) => {
+      this.trigger('suggestion', suggestion);
+    });
+
+    this.socket.on('suggestion_approved', (data: { trackId: string; title: string; artist: string }) => {
+      if (this.roomState) {
+        this.roomState.currentTrackId = data.trackId;
+        this.roomState.status = 'paused';
+        this.roomState.seekPosition = 0;
+        this.roomState.trackStartTime = null;
+      }
+      this.trigger('suggestion_approved', data);
+    });
+  }
+}
+
