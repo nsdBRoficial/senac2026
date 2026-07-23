@@ -1,0 +1,167 @@
+// SDK = Registro Imutável de Eventos
+
+import * as crypto from 'crypto';
+
+// ============================================================================
+// TIPAGENS DO SDK
+// ============================================================================
+export interface LogEntry {
+    payload: any;
+    hash: string;
+    priority: string;
+}
+
+export interface TransactionReceipt {
+    txId: string;
+    masterHash: string;
+    logsCount: number;
+    timestamp: string;
+}
+
+export interface SDKConfig {
+    apiKey: string;
+    network: 'mainnet' | 'testnet' | 'local';
+}
+
+// ============================================================================
+// MÓDULO 1: MOTOR DE HASHING INTERNO
+// ============================================================================
+export class HashEngine {
+    /**
+     * Gera uma "impressão digital" (SHA-256) única para os dados.
+     */
+    static generate(data: any): string {
+        const dataString = JSON.stringify(data);
+        return crypto.createHash('sha256').update(dataString).digest('hex');
+    }
+}
+
+// ============================================================================
+// MÓDULO 2: CAPTURA DE EVENTOS (OFF-CHAIN)
+// ============================================================================
+export class EventLogger {
+    /**
+     * Passo 1: Registra o evento, carimba o tempo e gera a assinatura matemática.
+     * @param eventData - Os dados críticos do log.
+     * @param priority - 'HIGH', 'MEDIUM', 'LOW' (Filtro de Importância)
+     */
+    public captureEvent(eventData: any, priority: string = 'MEDIUM'): { status: string, hashGerado: string, dados: any, entry: LogEntry } {
+        const payload = {
+            ...eventData,
+            timestamp: new Date().toISOString()
+        };
+        
+        const hash = HashEngine.generate(payload);
+        const entry: LogEntry = { payload, hash, priority };
+        
+        return {
+            status: "Evento capturado off-chain",
+            hashGerado: hash,
+            dados: payload,
+            entry
+        };
+    }
+}
+
+// ============================================================================
+// MÓDULO 3: GERENCIADOR DE LOTES (BATCHING)
+// ============================================================================
+export class BatchManager {
+    private pendingLogs: LogEntry[] = [];
+    private onChainSimulatedLedger: TransactionReceipt[] = [];
+
+    /**
+     * Adiciona um log capturado à fila de espera (buffer off-chain).
+     */
+    public queueLog(logEntry: LogEntry): void {
+        this.pendingLogs.push(logEntry);
+    }
+
+    /**
+     * Passo 2: Pega todos os logs pendentes e gera uma Raiz Mestra (Merkle Root)
+     * para enviar à Blockchain pagando apenas 1 taxa de rede.
+     */
+    public commitBatchToBlockchain(): { status: string, recibo?: TransactionReceipt } {
+        if (this.pendingLogs.length === 0) {
+            return { status: "Nenhum evento pendente para registro." };
+        }
+
+        // Agrupa todos os hashes pendentes em uma única string
+        const allPendingHashes = this.pendingLogs.map(log => log.hash).join('');
+        
+        // Gera o Hash Mestre
+        const masterHash = HashEngine.generate(allPendingHashes);
+        
+        // Simula o registro na Blockchain (On-chain)
+        const transactionReceipt: TransactionReceipt = {
+            txId: '0x' + crypto.randomBytes(16).toString('hex'),
+            masterHash: masterHash,
+            logsCount: this.pendingLogs.length,
+            timestamp: new Date().toISOString()
+        };
+
+        this.onChainSimulatedLedger.push(transactionReceipt);
+        
+        // Limpa o buffer após o registro bem-sucedido
+        this.pendingLogs = []; 
+        
+        return {
+            status: "Lote registrado na Blockchain com sucesso!",
+            recibo: transactionReceipt
+        };
+    }
+}
+
+// ============================================================================
+// MÓDULO 4: AUDITORIA DESCENTRALIZADA
+// ============================================================================
+export class Auditor {
+    /**
+     * Passo 3: Valida se um dado específico corresponde ao hash guardado.
+     * Aplicação prática da premissa "Não confie, verifique".
+     */
+    public verifyIntegrity(originalPayload: any, expectedHash: string): { isValid: boolean, message: string } {
+        const testHash = HashEngine.generate(originalPayload);
+        const isValid = testHash === expectedHash;
+
+        return {
+            isValid: isValid,
+            message: isValid 
+                ? "SUCESSO: Prova de integridade válida. O dado não foi alterado."
+                : "ALERTA: Integridade corrompida. O dado foi modificado."
+        };
+    }
+}
+
+// ============================================================================
+// CLASSE PRINCIPAL: IMMUTABLE LOG SDK
+// ============================================================================
+export class ImmutableLogSDK {
+    public logger: EventLogger;
+    public batchManager: BatchManager;
+    public auditor: Auditor;
+    private config: SDKConfig;
+
+    constructor(config: SDKConfig) {
+        this.config = config;
+        this.logger = new EventLogger();
+        this.batchManager = new BatchManager();
+        this.auditor = new Auditor();
+        
+        console.log(`[SDK INITIALIZED] Conectado à rede: ${this.config.network}`);
+    }
+
+    /**
+     * Método facilitador (Facade) para capturar o evento e já colocá-lo na fila de processamento.
+     */
+    public logAndQueue(eventData: any, priority: string = 'MEDIUM'): { status: string, hashGerado: string, dados: any } {
+        const captureResult = this.logger.captureEvent(eventData, priority);
+        this.batchManager.queueLog(captureResult.entry);
+        
+        return {
+            status: captureResult.status,
+            hashGerado: captureResult.hashGerado,
+            dados: captureResult.dados
+        };
+    }
+}
